@@ -1,4 +1,5 @@
 import type { Platform } from '../types';
+import type { PropAnchor } from '../world';
 
 export class MossGrottoRenderer {
   private layer1Cache: HTMLCanvasElement | null = null;
@@ -119,24 +120,36 @@ export class MossGrottoRenderer {
     cy: number,
     viewW: number,
     viewH: number,
-    time: number
+    time: number,
+    anchors?: PropAnchor[]
   ): void {
-    void cy;
-    void viewH;
-    const spans = [120, 1280, 2460, 3400];
-    for (const baseX of spans) {
-      if (baseX + 1080 < cx - 120 || baseX - 160 > cx + viewW + 120) continue;
-
-      const floorY = baseX > 3200 ? 520 : baseX > 2400 ? 900 : baseX > 1200 ? 880 : 920;
+    const items: PropAnchor[] = anchors && anchors.length > 0
+      ? anchors
+      : [
+          { x: 160, y: 880, scale: 1.0 },
+          { x: 1120, y: 1120, scale: 0.95 },
+          { x: 2820, y: 620, scale: 1.05 },
+        ];
+    for (const anchor of items) {
+      const baseX = anchor.x;
+      const floorY = anchor.y;
+      const scale = anchor.scale ?? 1.0;
+      if (
+        baseX + 760 < cx - 120 ||
+        baseX - 160 > cx + viewW + 120 ||
+        floorY + 140 < cy - 120 ||
+        floorY - 460 > cy + viewH + 120
+      ) {
+        continue;
+      }
 
       // Round layered moss cushions along cavern floor edges
-      this.drawMossBlobCluster(ctx, baseX + 160, floorY, 1.0);
-      this.drawMossBlobCluster(ctx, baseX + 820, floorY, 0.85);
+      this.drawMossBlobCluster(ctx, baseX + 80, floorY, scale);
+      this.drawMossBlobCluster(ctx, baseX + 420, floorY, scale * 0.85);
 
       // Detailed dangling leafy vines descending from upper canopy
-      this.drawDanglingVines(ctx, baseX + 260, floorY - 430, 145, time, 0.2);
-      this.drawDanglingVines(ctx, baseX + 610, floorY - 450, 175, time, 1.7);
-      this.drawDanglingVines(ctx, baseX + 940, floorY - 410, 130, time, 2.9);
+      this.drawDanglingVines(ctx, baseX + 180, floorY - 380, 145, time, baseX * 0.01 + 0.2);
+      this.drawDanglingVines(ctx, baseX + 490, floorY - 410, 165, time, baseX * 0.01 + 1.7);
     }
   }
 
@@ -271,9 +284,11 @@ export class MossGrottoRenderer {
     viewH: number,
     cx: number,
     cy: number,
-    time: number
+    time: number,
+    anchors?: PropAnchor[]
   ): void {
     void cy;
+    void anchors;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
 

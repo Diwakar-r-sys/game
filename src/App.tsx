@@ -75,8 +75,30 @@ const INITIAL_HUD: HudSnapshot = {
   soul: 33,
   maxSoul: 100,
   essence: 0,
-  zoneName: 'Sunken Threshold',
-  currentRoomId: 'room-threshold',
+  level: 1,
+  levelTitle: 'Beginner Knight',
+  abilityLabel: 'Walk + Jump',
+  xp: 0,
+  xpIntoLevel: 0,
+  xpForNextLevel: 25,
+  xpProgress: 0,
+  unlockedAbilities: {
+    walkJump: true,
+    swordAttack: false,
+    dash: false,
+    wallJump: false,
+    doubleJump: false,
+    energyAttack: false,
+    shadowDash: false,
+    strongMagic: false,
+    combatCombo: false,
+    ultimateAbility: false,
+  },
+  levelUpBanner: null,
+  zoneName: 'Frozen Threshold',
+  currentRoomId: 'ice-entry',
+  worldWidth: 2800,
+  worldHeight: 2100,
   playerNormX: 0.15,
   playerNormY: 0.55,
   rooms: [],
@@ -365,6 +387,26 @@ export default function App() {
                     </>
                   )}
                 </div>
+                {/* Level Name & XP Progress Bar */}
+                <div className="mt-0.5 flex max-w-[260px] flex-col gap-1 sm:max-w-[300px]">
+                  <div className="flex items-center justify-between gap-2 text-[10px] sm:text-[11px]">
+                    <span className="truncate font-semibold text-[#eef7f3]">
+                      Level {hud.level}: {hud.levelTitle}
+                    </span>
+                    <span className="font-mono-code shrink-0 text-[#95d5b2] tabular-nums">
+                      {hud.level >= 10 ? 'MAX' : `${hud.xpIntoLevel}/${hud.xpForNextLevel} XP`}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full border border-[#24443f] bg-[#071315]">
+                    <div
+                      className="h-full origin-left bg-[#52b788] transition-transform duration-200 ease-out"
+                      style={{ transform: `scaleX(${Math.max(0.02, hud.xpProgress)})` }}
+                    />
+                  </div>
+                  <div className="truncate text-[10px] text-[#83a69b]">
+                    Active Art: <span className="text-[#fde047]">{hud.abilityLabel}</span>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -440,6 +482,8 @@ export default function App() {
                 <MiniMapHud
                   rooms={hud.rooms}
                   currentRoomId={hud.currentRoomId}
+                  worldWidth={hud.worldWidth}
+                  worldHeight={hud.worldHeight}
                   playerNormX={hud.playerNormX}
                   playerNormY={hud.playerNormY}
                   onOpenFullMap={() => setMapOpen(true)}
@@ -447,6 +491,18 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* On-Screen Level-Up Notification Banner */}
+          {hud.levelUpBanner && (
+            <div className="mx-auto mt-1 max-w-md rounded-xl border border-[#fde047]/60 bg-[#081618]/95 px-5 py-2.5 text-center shadow-2xl">
+              <div className="text-[11px] font-semibold tracking-[0.16em] text-[#fde047] uppercase">
+                NEW ABILITY UNLOCKED: {hud.levelUpBanner.abilityLabel.toUpperCase()}!
+              </div>
+              <div className="font-display mt-0.5 text-sm font-semibold text-[#eef7f3]">
+                Level {hud.levelUpBanner.level}: {hud.levelUpBanner.title}
+              </div>
+            </div>
+          )}
 
           {/* Bottom Boss Bar (Only active inside Warden's Sanctum during boss fight) */}
           {hud.bossActive && (
@@ -492,6 +548,7 @@ export default function App() {
           visible={showTouchControls}
           canHeal={hud.canHeal}
           hasSpeakerNearby={Boolean(hud.nearbySpeaker)}
+          unlockedAbilities={hud.unlockedAbilities}
           onAction={handleVirtualAction}
         />
       )}
@@ -915,8 +972,11 @@ export default function App() {
       {/* === INTERACTIVE WORLD MAP MODAL === */}
       <WorldMapModal
         open={mapOpen}
+        sceneTheme={hud.sceneTheme}
         rooms={hud.rooms}
         currentRoomId={hud.currentRoomId}
+        worldWidth={hud.worldWidth}
+        worldHeight={hud.worldHeight}
         playerNormX={hud.playerNormX}
         playerNormY={hud.playerNormY}
         secretWallsBroken={hud.secretWallsBroken}
@@ -933,6 +993,10 @@ export default function App() {
         soul={hud.soul}
         maxSoul={hud.maxSoul}
         essence={hud.essence}
+        level={hud.level}
+        levelTitle={hud.levelTitle}
+        xp={hud.xp}
+        unlockedAbilities={hud.unlockedAbilities}
         secretWallsBroken={hud.secretWallsBroken}
         totalSecretWalls={hud.totalSecretWalls}
         onClose={() => setInventoryOpen(false)}

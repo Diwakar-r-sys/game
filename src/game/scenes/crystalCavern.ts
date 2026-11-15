@@ -1,4 +1,5 @@
 import type { Platform } from '../types';
+import type { PropAnchor } from '../world';
 
 export class CrystalCavernRenderer {
   private layer1Cache: HTMLCanvasElement | null = null;
@@ -128,26 +129,39 @@ export class CrystalCavernRenderer {
     cy: number,
     viewW: number,
     viewH: number,
-    time: number
+    time: number,
+    anchors?: PropAnchor[]
   ): void {
-    void cy;
-    void viewH;
-    // Repeating architectural cavern landmarks along the Metroidvania path
-    const spans = [140, 1340, 2520, 3440];
-    for (const baseX of spans) {
-      if (baseX + 1050 < cx - 100 || baseX - 120 > cx + viewW + 100) continue;
+    const items: PropAnchor[] = anchors && anchors.length > 0
+      ? anchors
+      : [
+          { x: 180, y: 420, scale: 0.9 },
+          { x: 460, y: 1880, scale: 1.0 },
+          { x: 1780, y: 620, scale: 1.0 },
+        ];
 
-      const floorY = baseX > 3200 ? 520 : baseX > 2400 ? 900 : baseX > 1200 ? 880 : 920;
+    for (const anchor of items) {
+      const baseX = anchor.x;
+      const floorY = anchor.y;
+      const scale = anchor.scale ?? 1.0;
+      if (
+        baseX + 760 < cx - 120 ||
+        baseX - 140 > cx + viewW + 120 ||
+        floorY + 140 < cy - 120 ||
+        floorY - 520 > cy + viewH + 120
+      ) {
+        continue;
+      }
 
       // Giant interlocking stone pillar & ceiling archway
-      this.drawStonePillarArch(ctx, baseX + 90, floorY);
+      this.drawStonePillarArch(ctx, baseX, floorY);
 
       // Flickering iron/wood torch brazier on left side
-      this.drawTorchBrazier(ctx, baseX + 195, floorY, time);
+      this.drawTorchBrazier(ctx, baseX + 125, floorY, time);
 
       // Large glowing cyan crystal shard cluster
-      this.drawCrystalCluster(ctx, baseX + 490, floorY, 1.0, time);
-      this.drawCrystalCluster(ctx, baseX + 860, floorY, 0.72, time + 1.3);
+      this.drawCrystalCluster(ctx, baseX + 320, floorY, scale, time);
+      this.drawCrystalCluster(ctx, baseX + 540, floorY, scale * 0.72, time + 1.3);
     }
   }
 
@@ -380,23 +394,23 @@ export class CrystalCavernRenderer {
     viewH: number,
     cx: number,
     cy: number,
-    time: number
+    time: number,
+    anchors?: PropAnchor[]
   ): void {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
 
     // Volumetric diagonal light beams streaming from upper-right cavern fissures
     const rays = [
-      { x: 640, w: 185 },
-      { x: 1840, w: 205 },
-      { x: 2860, w: 190 },
-      { x: 3920, w: 220 },
+      { x: 420, w: 185 },
+      { x: 1060, w: 210 },
+      { x: 2040, w: 220 },
     ];
     for (const r of rays) {
       const sx = r.x - cx * 0.85;
       if (sx < -360 || sx > viewW + 360) continue;
       const shimmer = 0.8 + Math.sin(time * 0.9 + r.x) * 0.2;
-      const topY = -60 - cy * 0.15;
+      const topY = -60 - cy * 0.12;
       const botY = viewH + 80;
       const slant = -240;
 
@@ -417,30 +431,44 @@ export class CrystalCavernRenderer {
 
     // Additive Crystal & Torch radial blooms in world space
     ctx.translate(-Math.round(cx), -Math.round(cy));
-    const spans = [140, 1340, 2520, 3440];
-    for (const baseX of spans) {
-      if (baseX + 1000 < cx || baseX - 100 > cx + viewW) continue;
-      const floorY = baseX > 3200 ? 520 : baseX > 2400 ? 900 : baseX > 1200 ? 880 : 920;
+    const items: PropAnchor[] = anchors && anchors.length > 0
+      ? anchors
+      : [
+          { x: 180, y: 420 },
+          { x: 460, y: 1880 },
+          { x: 1780, y: 620 },
+        ];
+    for (const anchor of items) {
+      const baseX = anchor.x;
+      const floorY = anchor.y;
+      if (
+        baseX + 760 < cx ||
+        baseX - 140 > cx + viewW ||
+        floorY + 120 < cy ||
+        floorY - 360 > cy + viewH
+      ) {
+        continue;
+      }
 
       // Warm torch flicker light (#ff9d00)
       const torchR = 165 + Math.sin(time * 14) * 10;
-      const tGrad = ctx.createRadialGradient(baseX + 195, floorY - 155, 6, baseX + 195, floorY - 155, torchR);
+      const tGrad = ctx.createRadialGradient(baseX + 125, floorY - 155, 6, baseX + 125, floorY - 155, torchR);
       tGrad.addColorStop(0, 'rgba(255, 185, 60, 0.45)');
       tGrad.addColorStop(0.45, 'rgba(255, 157, 0, 0.18)');
       tGrad.addColorStop(1, 'rgba(255, 157, 0, 0)');
       ctx.fillStyle = tGrad;
       ctx.beginPath();
-      ctx.arc(baseX + 195, floorY - 155, torchR, 0, Math.PI * 2);
+      ctx.arc(baseX + 125, floorY - 155, torchR, 0, Math.PI * 2);
       ctx.fill();
 
       // Cyan crystal bloom & floor mist
-      const cGrad = ctx.createRadialGradient(baseX + 505, floorY - 75, 10, baseX + 505, floorY - 75, 220);
+      const cGrad = ctx.createRadialGradient(baseX + 320, floorY - 75, 10, baseX + 320, floorY - 75, 220);
       cGrad.addColorStop(0, 'rgba(122, 231, 255, 0.34)');
       cGrad.addColorStop(0.55, 'rgba(0, 210, 255, 0.12)');
       cGrad.addColorStop(1, 'rgba(0, 210, 255, 0)');
       ctx.fillStyle = cGrad;
       ctx.beginPath();
-      ctx.arc(baseX + 505, floorY - 75, 220, 0, Math.PI * 2);
+      ctx.arc(baseX + 320, floorY - 75, 220, 0, Math.PI * 2);
       ctx.fill();
     }
 

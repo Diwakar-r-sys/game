@@ -6,6 +6,7 @@ import type {
   AfterImage,
   AirStream,
   BenchCheckpoint,
+  BouncePad,
   DialogueSpeaker,
   Enemy,
   FloatingText,
@@ -21,6 +22,7 @@ import type {
   SporeProjectile,
   WaterVolume,
   WorldRelicPickup,
+  XpOrb,
 } from './types';
 import type { WorldData } from './world';
 
@@ -104,11 +106,11 @@ export function renderGameFrame(
 
   // Procedural Scene-Specific Landmarks
   if (sceneTheme === 'crystal') {
-    crystalRenderer.drawLayer2WorldProps(ctx, cx, cy, viewW, viewH, time);
+    crystalRenderer.drawLayer2WorldProps(ctx, cx, cy, viewW, viewH, time, world.propAnchors);
   } else if (sceneTheme === 'swamp') {
-    swampRenderer.drawLayer2WorldProps(ctx, cx, cy, viewW, viewH, time);
+    swampRenderer.drawLayer2WorldProps(ctx, cx, cy, viewW, viewH, time, world.propAnchors);
   } else {
-    grottoRenderer.drawLayer2WorldProps(ctx, cx, cy, viewW, viewH, time);
+    grottoRenderer.drawLayer2WorldProps(ctx, cx, cy, viewW, viewH, time, world.propAnchors);
   }
 
   // Luminous Vertical Air Streams (Azure Silk Shaft)
@@ -151,6 +153,13 @@ export function renderGameFrame(
     drawRelicPickup(ctx, relic, time);
   }
 
+  // Collectible XP Essence Orbs
+  for (const orb of world.xpOrbs) {
+    if (orb.collected) continue;
+    if (orb.x < cx - 60 || orb.x > cx + viewW + 60) continue;
+    drawXpOrb(ctx, orb, time);
+  }
+
   // Interactive Swaying Hanging Ropes
   for (const rope of world.hangingRopes) {
     if (rope.x < cx - 120 || rope.x > cx + viewW + 120) continue;
@@ -186,6 +195,12 @@ export function renderGameFrame(
   for (const m of world.mossTufts) {
     if (m.x + m.w < cx - 40 || m.x > cx + viewW + 40) continue;
     drawMossTuft(ctx, m, time, sceneTheme);
+  }
+
+  // Interactive Springy Moss Bounce Pads (Lush Green Moss Grotto)
+  for (const pad of world.bouncePads) {
+    if (pad.x + pad.w < cx - 60 || pad.x > cx + viewW + 60) continue;
+    drawBouncePad(ctx, pad, time);
   }
 
   // Destructible Spore Bulbs & Pogo Pods
@@ -257,11 +272,11 @@ export function renderGameFrame(
 
   // === LAYER 3: Lighting, Volumetric God Rays & Bioluminescence ===
   if (sceneTheme === 'crystal') {
-    crystalRenderer.drawLayer3Lighting(ctx, viewW, viewH, cx, cy, time);
+    crystalRenderer.drawLayer3Lighting(ctx, viewW, viewH, cx, cy, time, world.propAnchors);
   } else if (sceneTheme === 'swamp') {
-    swampRenderer.drawLayer3Lighting(ctx, viewW, viewH, cx, cy, time);
+    swampRenderer.drawLayer3Lighting(ctx, viewW, viewH, cx, cy, time, world.propAnchors);
   } else {
-    grottoRenderer.drawLayer3Lighting(ctx, viewW, viewH, cx, cy, time);
+    grottoRenderer.drawLayer3Lighting(ctx, viewW, viewH, cx, cy, time, world.propAnchors);
   }
 
   ctx.save();
@@ -770,6 +785,33 @@ function drawRelicPickup(ctx: CanvasRenderingContext2D, relic: WorldRelicPickup,
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
+  ctx.restore();
+}
+
+function drawXpOrb(ctx: CanvasRenderingContext2D, orb: XpOrb, time: number): void {
+  const bobY = orb.y + Math.sin(time * 3.6 + orb.phase) * 4.5;
+  ctx.save();
+  const rad = ctx.createRadialGradient(orb.x, bobY, 2, orb.x, bobY, 24);
+  rad.addColorStop(0, 'rgba(250, 204, 21, 0.55)');
+  rad.addColorStop(0.55, 'rgba(110, 231, 183, 0.25)');
+  rad.addColorStop(1, 'rgba(110, 231, 183, 0)');
+  ctx.fillStyle = rad;
+  ctx.beginPath();
+  ctx.arc(orb.x, bobY, 24, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#fde047';
+  ctx.strokeStyle = '#fef9c3';
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  ctx.arc(orb.x, bobY, 7, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(orb.x - 2, bobY - 2, 2.2, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }
 
@@ -1478,6 +1520,63 @@ function drawFloatingMotes(
     ctx.arc(sx, sy, m.radius, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+function drawBouncePad(
+  ctx: CanvasRenderingContext2D,
+  pad: BouncePad,
+  time: number
+): void {
+  const pulse = 0.75 + Math.sin(time * 4.2 + pad.x * 0.02) * 0.25;
+  const springPhase = pad.bounceTimer > 0 ? Math.sin((pad.bounceTimer / 0.25) * Math.PI) : 0;
+  const squashY = 1 - springPhase * 0.38;
+  const cx = pad.x + pad.w * 0.5;
+  const baseBottom = pad.y + pad.h;
+
+  ctx.save();
+  ctx.translate(cx, baseBottom);
+  ctx.scale(1 + springPhase * 0.16, squashY);
+
+  // Soft bioluminescent aura
+  const aura = ctx.createRadialGradient(0, -pad.h * 0.8, 4, 0, -pad.h * 0.8, pad.w * 0.8);
+  aura.addColorStop(0, `rgba(190, 242, 100, ${0.32 * pulse})`);
+  aura.addColorStop(1, 'rgba(74, 222, 128, 0)');
+  ctx.fillStyle = aura;
+  ctx.beginPath();
+  ctx.arc(0, -pad.h * 0.8, pad.w * 0.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Cushion dome
+  const hw = pad.w * 0.5;
+  const grad = ctx.createLinearGradient(0, -pad.h * 1.4, 0, 0);
+  grad.addColorStop(0, '#bef264');
+  grad.addColorStop(0.45, '#4ade80');
+  grad.addColorStop(1, '#166534');
+
+  ctx.fillStyle = grad;
+  ctx.strokeStyle = '#07140e';
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.moveTo(-hw, 0);
+  ctx.quadraticCurveTo(-hw, -pad.h * 1.55, 0, -pad.h * 1.55);
+  ctx.quadraticCurveTo(hw, -pad.h * 1.55, hw, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Upward chevron spring cue
+  ctx.strokeStyle = 'rgba(236, 253, 245, 0.85)';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const arrowY = -pad.h * 0.9 - Math.sin(time * 5) * 3;
+  ctx.beginPath();
+  ctx.moveTo(-8, arrowY + 4);
+  ctx.lineTo(0, arrowY - 4);
+  ctx.lineTo(8, arrowY + 4);
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 function drawVignette(ctx: CanvasRenderingContext2D, viewW: number, viewH: number): void {

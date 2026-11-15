@@ -1,6 +1,7 @@
 import { AnimationController } from './animation';
 import { soundEngine } from './audio';
 import { InputHandler, type InputSnapshot, type VirtualAction } from './input';
+import { ProgressionManager, gameState } from './progression';
 import { renderGameFrame, type PlayerRenderState } from './renderer';
 import {
   DEFAULT_MOVEMENT_CONFIG,
@@ -12,6 +13,7 @@ import {
   type HudSnapshot,
   type InventoryItem,
   type LevelPreset,
+  type LevelUpBanner,
   type MovementConfig,
   type Particle,
   type Rect,
@@ -76,10 +78,10 @@ export class GameEngine {
   private onInventoryToggleRequest?: () => void;
 
   public config: MovementConfig = { ...DEFAULT_MOVEMENT_CONFIG };
-  private world: WorldData = createWorld();
-  private status: GameStatus = 'TITLE_MENU';
   private mapManager = new MapManager('crystal');
   private sceneTheme: SceneTheme = 'crystal';
+  private world: WorldData = createWorld('crystal');
+  private status: GameStatus = 'TITLE_MENU';
   private titleMousePan = 0.5;
   private externalHold = false;
   private screenShakeEnabled = true;
@@ -139,7 +141,14 @@ export class GameEngine {
   private runCycle = 0;
   private footstepTimer = 0;
 
-  // Stats, Map & Checkpoints
+  // Stats, Progression, Map & Checkpoints
+  private progression = new ProgressionManager();
+  private levelUpBanner: LevelUpBanner | null = null;
+  private levelUpBannerTimer = 0;
+  private comboStep = 0;
+  private comboResetTimer = 0;
+  private lockedCalloutCooldown = 0;
+  private visitedXpRoomIds = new Set<string>(['room-threshold']);
   private hp = 5;
   private maxHp = 5;
   private soul = 33;
@@ -274,8 +283,19 @@ export class GameEngine {
 
   public startAtPreset(preset: LevelPreset): void {
     this.externalHold = false;
+    this.sceneTheme = this.mapManager.setTheme(preset.recommendedTheme);
     this.resetWorldState('PLAYING');
-    this.sceneTheme = preset.recommendedTheme;
+    const presetXp =
+      preset.difficulty === 'Boss'
+        ? 600
+        : preset.difficulty === 'Depths'
+          ? 360
+          : preset.difficulty === 'Ascent'
+            ? 180
+            : preset.difficulty === 'Trial'
+              ? 115
+              : 0;
+    this.progression.reset(presetXp);
     this.px = preset.spawnX;
     this.py = preset.spawnY;
     this.respawnX = preset.spawnX;
@@ -310,7 +330,9 @@ export class GameEngine {
         maxHp: this.maxHp,
         soul: this.soul,
         essence: this.essence,
-        zoneName: getZoneName(this.px + this.pw * 0.5, this.py + this.ph * 0.5),
+        xp: gameState.currentXP,
+        collectedOrbIds: this.world.xpOrbs.filter((o) => o.collected).map((o) => o.id),
+        zoneName: getZoneName(this.px + this.pw * 0.5, this.py + this.ph * 0.5, this.world.rooms),
         collectedItemIds: Array.from(this.collectedItemIds),
         equippedItemIds: Array.from(this.collectedItemIds),
         visitedRoomIds: this.world.rooms.filter((r) => r.visited).map((r) => r.id),
@@ -331,14 +353,15 @@ export class GameEngine {
       if (!raw) return false;
       const saved = JSON.parse(raw) as SaveStateData;
       this.externalHold = false;
-      this.resetWorldState('PLAYING');
       const restoredTheme: SceneTheme =
         saved.sceneTheme === 'swamp' || saved.sceneTheme === 'grotto' ? saved.sceneTheme : 'crystal';
       this.sceneTheme = this.mapManager.setTheme(restoredTheme);
+      this.resetWorldState('PLAYING');
       this.maxHp = Math.max(5, saved.maxHp ?? 5);
       this.hp = Math.min(this.maxHp, Math.max(1, saved.hp ?? this.maxHp));
       this.soul = Math.max(0, Math.min(this.maxSoul, saved.soul ?? 33));
       this.essence = Math.max(0, saved.essence ?? 0);
+      this.progression.reset(saved.xp ?? 0);
       this.respawnX = saved.respawnX ?? this.world.spawnX;
       this.respawnY = saved.respawnY ?? this.world.spawnY;
       this.px = this.respawnX;
@@ -360,7 +383,16 @@ export class GameEngine {
         }
       }
 
-      const visited = new Set(saved.visitedRoomIds ?? []);
+      const collectedOrbs = new Set(saved.collectedOrbIds ?? []);
+      for (const orb of this.world.xpOrbs) {
+        if (collectedOrbs.has(orb.id)) {
+          orb.collected = true;
+        }
+      }
+
+      const defaultRoomId = this.world.rooms[0]?.id ?? 'room-threshold';
+      const visited = new Set(saved.visitedRoomIds ?? [defaultRoomId]);
+      this.visitedXpRoomIds = new Set(visited);
       const discovered = new Set(saved.discoveredRoomIds ?? []);
       for (const r of this.world.rooms) {
         if (visited.has(r.id)) r.visited = true;
@@ -399,6 +431,7 @@ export class GameEngine {
 
   public interactWithNearbySpeaker(): void {
     if (!this.nearbySpeaker) return;
+    const firstRead = !this.nearbySpeaker.read;
     this.nearbySpeaker.read = true;
     this.activeDialogue = {
       speakerName: this.nearbySpeaker.name,
@@ -407,6 +440,9 @@ export class GameEngine {
       lineIndex: 0,
     };
     soundEngine.playBench();
+    if (firstRead) {
+      this.awardXP(30, this.nearbySpeaker.x, this.nearbySpeaker.y - 44);
+    }
     this.emitHud(true);
   }
 
@@ -462,16 +498,73 @@ export class GameEngine {
 
   public toggleSceneTheme(): void {
     this.sceneTheme = this.mapManager.cycleTheme();
+    this.applyThemeWorldSwitch();
     this.emitHud(true);
   }
 
   public setSceneTheme(theme: SceneTheme): void {
-    this.sceneTheme = this.mapManager.setTheme(theme);
+    const nextTheme = this.mapManager.setTheme(theme);
+    if (nextTheme === this.sceneTheme) {
+      this.emitHud(true);
+      return;
+    }
+    this.sceneTheme = nextTheme;
+    this.applyThemeWorldSwitch();
     this.emitHud(true);
   }
 
+  private applyThemeWorldSwitch(): void {
+    this.world = createWorld(this.sceneTheme);
+    this.px = this.world.spawnX;
+    this.py = this.world.spawnY;
+    this.pvx = 0;
+    this.pvy = 0;
+    this.respawnX = this.world.spawnX;
+    this.respawnY = this.world.spawnY;
+    this.safeGroundX = this.world.spawnX;
+    this.safeGroundY = this.world.spawnY;
+    this.grounded = false;
+    this.wasGrounded = false;
+    this.wasInWater = false;
+    this.wallDir = 0;
+    this.wallSliding = false;
+    this.dashTimer = 0;
+    this.airDashAvailable = true;
+    this.airJumpsRemaining = 1;
+    this.bossEngaged = false;
+    this.bossDefeated = false;
+    this.nearbySpeaker = null;
+    this.activeDialogue = null;
+    this.slash.active = false;
+    this.specialWaves = [];
+    this.shockwaves = [];
+    for (const p of this.particles) p.active = false;
+    for (const a of this.afterImages) a.active = false;
+    for (const pr of this.projectiles) pr.active = false;
+
+    for (const relic of this.world.relics) {
+      if (this.collectedItemIds.has(relic.itemId)) {
+        relic.collected = true;
+      }
+    }
+
+    const startRoomId = this.world.rooms[0]?.id ?? 'room-threshold';
+    this.currentRoomId = startRoomId;
+    this.visitedXpRoomIds = new Set<string>([startRoomId]);
+    this.mapVersion += 1;
+    this.updateMapDiscovery();
+
+    this.camX = Math.max(0, Math.min(this.world.width - this.viewW, this.px - this.viewW * 0.4));
+    this.camY = Math.max(0, Math.min(this.world.height - this.viewH, this.py - this.viewH * 0.52));
+
+    if (this.status === 'PLAYING') {
+      this.spawnFloatingText(this.px + this.pw * 0.5, this.py - 22, this.world.mapTitle, '#7ae7ff');
+      this.saveProgress();
+    }
+  }
+
   private resetWorldState(nextStatus: GameStatus): void {
-    this.world = createWorld();
+    this.world = createWorld(this.sceneTheme);
     this.status = nextStatus;
     this.px = this.world.spawnX;
     this.py = this.world.spawnY;
@@ -501,6 +594,14 @@ export class GameEngine {
     this.squashX = 1;
     this.squashY = 1;
 
+    this.progression.reset(0);
+    this.levelUpBanner = null;
+    this.levelUpBannerTimer = 0;
+    this.comboStep = 0;
+    this.comboResetTimer = 0;
+    this.lockedCalloutCooldown = 0;
+    const startRoomId = this.world.rooms[0]?.id ?? 'room-threshold';
+    this.visitedXpRoomIds = new Set<string>([startRoomId]);
     this.hp = 5;
     this.maxHp = 5;
     this.soul = 33;
@@ -514,7 +615,7 @@ export class GameEngine {
     this.respawnY = this.world.spawnY;
     this.safeGroundX = this.world.spawnX;
     this.safeGroundY = this.world.spawnY;
-    this.currentRoomId = 'room-threshold';
+    this.currentRoomId = startRoomId;
     this.mapVersion += 1;
     this.collectedItemIds = new Set<string>(['pale-needle', 'pogo-art', 'silk-dash', 'focus-mend']);
     this.nearbySpeaker = null;
@@ -528,8 +629,8 @@ export class GameEngine {
     for (const a of this.afterImages) a.active = false;
     for (const pr of this.projectiles) pr.active = false;
 
-    this.camX = Math.max(0, this.px - this.viewW * 0.4);
-    this.camY = Math.max(0, this.py - this.viewH * 0.55);
+    this.camX = Math.max(0, Math.min(this.world.width - this.viewW, this.px - this.viewW * 0.4));
+    this.camY = Math.max(0, Math.min(this.world.height - this.viewH, this.py - this.viewH * 0.55));
   }
 
   private loop = (timestamp: number): void => {
@@ -631,16 +732,80 @@ export class GameEngine {
     }
     const autoDrift = 0.5 + 0.5 * Math.sin(this.elapsedTime * 0.14 - Math.PI * 0.5);
     const blendPan = autoDrift * 0.45 + this.titleMousePan * 0.55;
-    const targetCamX = 40 + blendPan * 1150;
-    const targetCamY = 480 + Math.sin(this.elapsedTime * 0.22) * 30;
+    const maxCamX = Math.max(0, this.world.width - this.viewW);
+    const maxCamY = Math.max(0, this.world.height - this.viewH);
+    const targetCamX = Math.min(maxCamX, 40 + blendPan * Math.min(1150, maxCamX));
+    const baseCamY = Math.max(0, Math.min(maxCamY, this.world.spawnY - this.viewH * 0.45));
+    const targetCamY = Math.max(0, Math.min(maxCamY, baseCamY + Math.sin(this.elapsedTime * 0.22) * 30));
     this.camX += (targetCamX - this.camX) * Math.min(1, dt * 3.5);
     this.camY += (targetCamY - this.camY) * Math.min(1, dt * 3.5);
     this.updateMossTufts(dt);
     this.updateHangingRopes(dt);
   }
 
+  private awardXP(amount: number, sourceX?: number, sourceY?: number): void {
+    if (amount <= 0) return;
+    const unlocked = this.progression.addXP(amount);
+    if (sourceX !== undefined && sourceY !== undefined) {
+      this.spawnFloatingText(sourceX, sourceY, `+${amount} XP`, '#fde047');
+    }
+    if (unlocked.length > 0) {
+      const top = unlocked[unlocked.length - 1];
+      this.levelUpBanner = {
+        level: top.level,
+        title: top.title,
+        abilityLabel: top.abilityLabel,
+      };
+      this.levelUpBannerTimer = 3.4;
+      soundEngine.playBench();
+      this.triggerShake(4.2, 0.16);
+      this.spawnBurst(this.px + this.pw * 0.5, this.py + this.ph * 0.5, 30, '#fde047', 260, -80);
+      this.emitHud(true);
+    }
+  }
+
+  private showLockedHint(label: string): void {
+    if (this.lockedCalloutCooldown > 0) return;
+    this.lockedCalloutCooldown = 0.65;
+    this.spawnFloatingText(this.px + this.pw * 0.5, this.py - 14, label, '#94a3b8');
+  }
+
+  private updateXpOrbs(): void {
+    const playerRect: Rect = { x: this.px, y: this.py, w: this.pw, h: this.ph };
+    for (const orb of this.world.xpOrbs) {
+      if (orb.collected) continue;
+      if (circleIntersectsRect(orb.x, orb.y, 18, playerRect)) {
+        orb.collected = true;
+        this.essence += Math.round(orb.xpValue * 0.5);
+        soundEngine.playBench();
+        this.spawnBurst(orb.x, orb.y, 18, '#fde047', 190, -50);
+        this.awardXP(orb.xpValue, orb.x, orb.y - 12);
+        this.saveProgress();
+      }
+    }
+  }
+
   private stepSimulation(dt: number, input: InputSnapshot): void {
+    if (this.levelUpBannerTimer > 0) {
+      this.levelUpBannerTimer -= dt;
+      if (this.levelUpBannerTimer <= 0) {
+        this.levelUpBannerTimer = 0;
+        this.levelUpBanner = null;
+      }
+    }
+    if (this.comboResetTimer > 0) {
+      this.comboResetTimer -= dt;
+      if (this.comboResetTimer <= 0) {
+        this.comboResetTimer = 0;
+        this.comboStep = 0;
+      }
+    }
+    if (this.lockedCalloutCooldown > 0) {
+      this.lockedCalloutCooldown = Math.max(0, this.lockedCalloutCooldown - dt);
+    }
+
     this.updatePlayer(dt, input);
+    this.updateBouncePads(dt);
     this.updateSlash(dt);
     this.updateSpecialWaves(dt);
     this.updateSecretWalls(dt);
@@ -649,6 +814,7 @@ export class GameEngine {
     this.updateProjectiles(dt);
     this.updateShockwaves(dt);
     this.updateSporeBulbs(dt);
+    this.updateXpOrbs();
     this.updateRelics();
     this.updateBenches();
     this.updateDialogueProximity(input);
@@ -659,6 +825,29 @@ export class GameEngine {
     this.updateFloatingTexts(dt);
     this.updateAfterImages(dt);
     this.updateCamera(dt);
+  }
+
+  private updateBouncePads(dt: number): void {
+    const playerRect: Rect = { x: this.px, y: this.py, w: this.pw, h: this.ph };
+    for (const pad of this.world.bouncePads) {
+      if (pad.bounceTimer > 0) {
+        pad.bounceTimer = Math.max(0, pad.bounceTimer - dt);
+      }
+      if (this.pvy >= -60 && rectsOverlap(playerRect, pad)) {
+        this.py = pad.y - this.ph;
+        this.pvy = pad.boostVelocity;
+        this.grounded = false;
+        this.dashTimer = 0;
+        this.airDashAvailable = true;
+        this.airJumpsRemaining = 1;
+        pad.bounceTimer = 0.25;
+        this.squashX = 0.74;
+        this.squashY = 1.32;
+        soundEngine.playPogo();
+        this.triggerShake(3.8, 0.12);
+        this.spawnBurst(pad.x + pad.w * 0.5, pad.y, 16, '#bef264', 210, -90);
+      }
+    }
   }
 
   private updatePlayer(dt: number, input: InputSnapshot): void {
@@ -717,39 +906,52 @@ export class GameEngine {
       return;
     }
 
-    // 2.8 8-Directional / Horizontal Silk Dash
-    if (
-      input.dashPressed &&
-      this.dashTimer <= 0 &&
-      this.dashCooldownTimer <= 0 &&
-      (this.grounded || this.airDashAvailable)
-    ) {
-      if (input.moveX !== 0) {
-        this.facing = input.moveX;
-      } else if (this.wallSliding && this.wallDir !== 0) {
-        this.facing = (-this.wallDir) as 1 | -1;
-      }
+    // 2.8 8-Directional / Horizontal Silk Dash (Level 3: Dash, Level 7: Shadow Dash I-Frames)
+    if (input.dashPressed) {
+      if (!this.progression.hasAbility('dash')) {
+        this.showLockedHint('DASH: LVL 3');
+      } else if (
+        this.dashTimer <= 0 &&
+        this.dashCooldownTimer <= 0 &&
+        (this.grounded || this.airDashAvailable)
+      ) {
+        if (input.moveX !== 0) {
+          this.facing = input.moveX;
+        } else if (this.wallSliding && this.wallDir !== 0) {
+          this.facing = (-this.wallDir) as 1 | -1;
+        }
 
-      const rawY = input.upHeld ? -1 : input.downHeld && !this.grounded ? 1 : 0;
-      const rawX = rawY !== 0 && input.moveX === 0 ? 0 : input.moveX !== 0 ? input.moveX : this.facing;
-      const len = Math.max(1, Math.hypot(rawX, rawY));
-      this.dashDirX = rawX / len;
-      this.dashDirY = rawY / len;
+        const rawY = input.upHeld ? -1 : input.downHeld && !this.grounded ? 1 : 0;
+        const rawX = rawY !== 0 && input.moveX === 0 ? 0 : input.moveX !== 0 ? input.moveX : this.facing;
+        const len = Math.max(1, Math.hypot(rawX, rawY));
+        this.dashDirX = rawX / len;
+        this.dashDirY = rawY / len;
 
-      this.dashTimer = cfg.dashDuration;
-      this.dashCooldownTimer = cfg.dashCooldown;
-      this.invulnTimer = Math.max(this.invulnTimer, cfg.dashIFrames);
-      if (!this.grounded) {
-        this.airDashAvailable = false;
+        this.dashTimer = cfg.dashDuration;
+        this.dashCooldownTimer = cfg.dashCooldown;
+        const hasShadowDash = this.progression.hasAbility('shadowDash');
+        if (hasShadowDash) {
+          this.invulnTimer = Math.max(this.invulnTimer, cfg.dashIFrames);
+        }
+        if (!this.grounded) {
+          this.airDashAvailable = false;
+        }
+        this.pvx = this.dashDirX * cfg.dashSpeed;
+        this.pvy = this.dashDirY * cfg.dashSpeed;
+        this.squashX = Math.abs(this.dashDirX) > 0.5 ? 1.32 : 0.82;
+        this.squashY = Math.abs(this.dashDirY) > 0.5 ? 1.3 : 0.74;
+        this.afterImageEmitTimer = 0;
+        soundEngine.playDash();
+        this.triggerShake(3.5, 0.12);
+        this.spawnBurst(
+          this.px + this.pw * 0.5,
+          this.py + this.ph * 0.5,
+          14,
+          hasShadowDash ? '#67e8f9' : '#99f6e4',
+          220,
+          0
+        );
       }
-      this.pvx = this.dashDirX * cfg.dashSpeed;
-      this.pvy = this.dashDirY * cfg.dashSpeed;
-      this.squashX = Math.abs(this.dashDirX) > 0.5 ? 1.32 : 0.82;
-      this.squashY = Math.abs(this.dashDirY) > 0.5 ? 1.3 : 0.74;
-      this.afterImageEmitTimer = 0;
-      soundEngine.playDash();
-      this.triggerShake(3.5, 0.12);
-      this.spawnBurst(this.px + this.pw * 0.5, this.py + this.ph * 0.5, 14, '#99f6e4', 220, 0);
     }
 
     const preBodyRect: Rect = { x: this.px, y: this.py, w: this.pw, h: this.ph };
@@ -821,7 +1023,14 @@ export class GameEngine {
       }
 
       this.wallSliding = false;
-      if (!this.grounded && !inWater && this.wallDir !== 0 && this.pvy > 0 && input.moveX === this.wallDir) {
+      if (
+        this.progression.hasAbility('wallJump') &&
+        !this.grounded &&
+        !inWater &&
+        this.wallDir !== 0 &&
+        this.pvy > 0 &&
+        input.moveX === this.wallDir
+      ) {
         this.wallSliding = true;
         if (this.pvy > cfg.wallSlideSpeed) {
           this.pvy = cfg.wallSlideSpeed;
@@ -853,7 +1062,7 @@ export class GameEngine {
           soundEngine.playJump();
           this.spawnBurst(this.px + this.pw * 0.5, this.py + 16, 10, '#a7f3d0', 140, -50);
         } else if (this.coyoteTimer > 0) {
-          // 2.4 Primary Jump
+          // 2.4 Primary Jump (Level 1: Walk + Jump)
           this.pvy = cfg.jumpVelocity;
           this.grounded = false;
           this.coyoteTimer = 0;
@@ -863,37 +1072,47 @@ export class GameEngine {
           soundEngine.playJump();
           this.spawnBurst(this.px + this.pw * 0.5, this.py + this.ph, 8, '#a7f3d0', 110, -30);
         } else if (this.wallDir !== 0 && !this.grounded) {
-          // 2.10 Wall Jump
-          this.pvx = -this.wallDir * cfg.wallJumpVelX;
-          this.pvy = cfg.wallJumpVelY;
-          this.facing = (-this.wallDir) as 1 | -1;
-          this.wallJumpLockTimer = cfg.wallJumpLockTime;
-          this.jumpBufferTimer = 0;
-          this.wallSliding = false;
-          this.airDashAvailable = true;
-          this.airJumpsRemaining = 1;
-          this.squashX = 0.76;
-          this.squashY = 1.26;
-          this.anim.trigger('wallJump', 0.2);
-          soundEngine.playWallJump();
-          this.spawnBurst(
-            this.wallDir === 1 ? this.px + this.pw : this.px,
-            this.py + this.ph * 0.5,
-            10,
-            '#d8f3dc',
-            150,
-            -60
-          );
+          if (this.progression.hasAbility('wallJump')) {
+            // 2.10 Wall Jump (Level 4)
+            this.pvx = -this.wallDir * cfg.wallJumpVelX;
+            this.pvy = cfg.wallJumpVelY;
+            this.facing = (-this.wallDir) as 1 | -1;
+            this.wallJumpLockTimer = cfg.wallJumpLockTime;
+            this.jumpBufferTimer = 0;
+            this.wallSliding = false;
+            this.airDashAvailable = true;
+            this.airJumpsRemaining = 1;
+            this.squashX = 0.76;
+            this.squashY = 1.26;
+            this.anim.trigger('wallJump', 0.2);
+            soundEngine.playWallJump();
+            this.spawnBurst(
+              this.wallDir === 1 ? this.px + this.pw : this.px,
+              this.py + this.ph * 0.5,
+              10,
+              '#d8f3dc',
+              150,
+              -60
+            );
+          } else {
+            this.jumpBufferTimer = 0;
+            this.showLockedHint('WALL JUMP: LVL 4');
+          }
         } else if (this.airJumpsRemaining > 0 && !this.grounded) {
-          // 2.5 Monarch Double Jump
-          this.airJumpsRemaining -= 1;
-          this.pvy = cfg.jumpVelocity * 0.92;
-          this.jumpBufferTimer = 0;
-          this.squashX = 0.84;
-          this.squashY = 1.22;
-          this.anim.trigger('doubleJump', 0.28);
-          soundEngine.playWallJump();
-          this.spawnBurst(this.px + this.pw * 0.5, this.py + this.ph * 0.65, 16, '#a7f3d0', 180, -40);
+          if (this.progression.hasAbility('doubleJump')) {
+            // 2.5 Monarch Double Jump (Level 5)
+            this.airJumpsRemaining -= 1;
+            this.pvy = cfg.jumpVelocity * 0.92;
+            this.jumpBufferTimer = 0;
+            this.squashX = 0.84;
+            this.squashY = 1.22;
+            this.anim.trigger('doubleJump', 0.28);
+            soundEngine.playWallJump();
+            this.spawnBurst(this.px + this.pw * 0.5, this.py + this.ph * 0.65, 16, '#a7f3d0', 180, -40);
+          } else {
+            this.jumpBufferTimer = 0;
+            this.showLockedHint('DOUBLE JUMP: LVL 5');
+          }
         }
       }
 
@@ -902,18 +1121,26 @@ export class GameEngine {
       }
     }
 
-    // 2.12 Special Attack (Silk Cyclone Nova + Soul Crescent Wave)
-    if (input.specialAttackPressed && this.specialCooldownTimer <= 0) {
-      this.executeSpecialAttack();
-    } else if (input.attackPressed && this.attackCooldownTimer <= 0) {
-      // 2.11 Directional Slash Attack
-      let dir: SlashDirection = this.facing === 1 ? 'right' : 'left';
-      if (input.upHeld) {
-        dir = 'up';
-      } else if (input.downHeld && !this.grounded) {
-        dir = 'down';
+    // 2.12 Special Attack (Level 6: Energy Attack, Level 8: Strong Magic Spell, Level 10: Ultimate)
+    if (input.specialAttackPressed) {
+      if (!this.progression.hasAbility('energyAttack')) {
+        this.showLockedHint('ENERGY: LVL 6');
+      } else if (this.specialCooldownTimer <= 0) {
+        this.executeSpecialAttack();
       }
-      this.startSlash(dir);
+    } else if (input.attackPressed) {
+      if (!this.progression.hasAbility('swordAttack')) {
+        this.showLockedHint('SWORD: LVL 2');
+      } else if (this.attackCooldownTimer <= 0) {
+        // 2.11 Directional Slash Attack
+        let dir: SlashDirection = this.facing === 1 ? 'right' : 'left';
+        if (input.upHeld) {
+          dir = 'up';
+        } else if (input.downHeld && !this.grounded) {
+          dir = 'down';
+        }
+        this.startSlash(dir);
+      }
     }
 
     this.wasGrounded = this.grounded;
@@ -1126,6 +1353,10 @@ export class GameEngine {
       room.visited = true;
       room.discovered = true;
       changed = true;
+      if (!this.visitedXpRoomIds.has(room.id)) {
+        this.visitedXpRoomIds.add(room.id);
+        this.awardXP(25, pcx, pcy - 24);
+      }
     }
     for (const adjId of room.adjacentRoomIds) {
       const adj = this.world.rooms.find((r) => r.id === adjId);
@@ -1141,6 +1372,12 @@ export class GameEngine {
 
   private startSlash(dir: SlashDirection): void {
     this.attackCooldownTimer = 0.24;
+    if (this.progression.hasAbility('combatCombo')) {
+      this.comboStep = this.comboResetTimer > 0 ? (this.comboStep + 1) % 3 : 0;
+      this.comboResetTimer = 0.85;
+    } else {
+      this.comboStep = 0;
+    }
     this.slash.active = true;
     this.slash.dir = dir;
     this.slash.duration = 0.13;
@@ -1148,65 +1385,87 @@ export class GameEngine {
     this.slash.hitIds.clear();
     this.positionSlash();
     this.anim.trigger('attack', 0.16);
-    const pitch = dir === 'up' ? 1.15 : dir === 'down' ? 0.92 : 1;
+    const pitch = dir === 'up' ? 1.15 : dir === 'down' ? 0.92 : this.comboStep === 2 ? 1.24 : 1;
     soundEngine.playSlash(pitch);
   }
 
   private executeSpecialAttack(): void {
-    this.specialCooldownTimer = 0.55;
-    this.attackCooldownTimer = 0.26;
-    this.invulnTimer = Math.max(this.invulnTimer, 0.22);
+    const hasStrongMagic = this.progression.hasAbility('strongMagic');
+    const hasUltimate = this.progression.hasAbility('ultimateAbility');
+
+    this.specialCooldownTimer = hasUltimate ? 0.5 : 0.6;
+    this.attackCooldownTimer = 0.24;
+    if (hasStrongMagic || hasUltimate) {
+      this.invulnTimer = Math.max(this.invulnTimer, 0.24);
+    }
     this.anim.trigger('specialAttack', 0.34);
-    this.triggerShake(6.5, 0.2);
-    soundEngine.playPogo();
-    soundEngine.playSlash(0.8);
+    this.triggerShake(hasUltimate ? 8.5 : hasStrongMagic ? 6.5 : 3.5, 0.2);
+    if (hasStrongMagic || hasUltimate) {
+      soundEngine.playPogo();
+    }
+    soundEngine.playSlash(hasUltimate ? 0.72 : 0.85);
 
     const pcx = this.px + this.pw * 0.5;
     const pcy = this.py + this.ph * 0.5;
-    this.spawnBurst(pcx, pcy, 28, '#67e8f9', 260, -40);
 
-    // 360-degree Silk Cyclone Nova (bypasses shields, deals 30 dmg)
-    const novaBox: Rect = { x: pcx - 92, y: pcy - 76, w: 184, h: 152 };
-    for (const enemy of this.world.enemies) {
-      if (!enemy.alive) continue;
-      if (rectsOverlap(novaBox, enemy)) {
-        this.hitEnemy(enemy, 30, true);
+    if (hasStrongMagic || hasUltimate) {
+      this.spawnBurst(pcx, pcy, hasUltimate ? 42 : 28, hasUltimate ? '#fde047' : '#67e8f9', 280, -40);
+      if (hasUltimate) {
+        this.spawnFloatingText(pcx, this.py - 18, 'RADIANT JUDGMENT!', '#fde047');
       }
-    }
-    for (const sw of this.world.secretWalls) {
-      if (sw.broken) continue;
-      if (rectsOverlap(novaBox, sw)) {
-        sw.hp = 0;
-        sw.broken = true;
-        this.essence += 50;
-        soundEngine.playEnemyDefeat();
-        this.spawnBurst(sw.x + sw.w * 0.5, sw.y + sw.h * 0.5, 30, '#95d5b2', 280, -60);
-        const room = this.world.rooms.find((r) => r.id === sw.revealRoomId);
-        if (room) {
-          room.discovered = true;
-          this.mapVersion += 1;
+
+      const halfW = hasUltimate ? 120 : 92;
+      const halfH = hasUltimate ? 95 : 76;
+      const novaDamage = hasUltimate ? 55 : 35;
+      const novaBox: Rect = { x: pcx - halfW, y: pcy - halfH, w: halfW * 2, h: halfH * 2 };
+      for (const enemy of this.world.enemies) {
+        if (!enemy.alive) continue;
+        if (rectsOverlap(novaBox, enemy)) {
+          this.hitEnemy(enemy, novaDamage, true);
         }
-        this.saveProgress();
       }
+      for (const sw of this.world.secretWalls) {
+        if (sw.broken) continue;
+        if (rectsOverlap(novaBox, sw)) {
+          sw.hp = 0;
+          sw.broken = true;
+          this.essence += 50;
+          this.awardXP(65, sw.x + sw.w * 0.5, sw.y + sw.h * 0.5);
+          soundEngine.playEnemyDefeat();
+          this.spawnBurst(sw.x + sw.w * 0.5, sw.y + sw.h * 0.5, 30, '#95d5b2', 280, -60);
+          const room = this.world.rooms.find((r) => r.id === sw.revealRoomId);
+          if (room) {
+            room.discovered = true;
+            this.mapVersion += 1;
+          }
+          this.saveProgress();
+        }
+      }
+    } else {
+      this.spawnBurst(pcx + this.facing * 14, pcy, 12, '#67e8f9', 180, -20);
     }
 
-    // Launch Soul Crescent Wave if >= 25 Soul (or empowered slash wave)
-    if (this.soul >= 25) {
-      this.soul -= 25;
+    // Launch Soul Crescent Energy Projectile (Level 6+, Twin Waves at Level 10)
+    if (this.soul >= 20) {
+      this.soul -= 20;
+    }
+    const waveDirs: (1 | -1)[] = hasUltimate ? [this.facing, (-this.facing) as 1 | -1] : [this.facing];
+    for (const dir of waveDirs) {
       this.specialWaves.push({
         active: true,
-        x: pcx + this.facing * 20,
+        x: pcx + dir * 20,
         y: pcy,
-        vx: this.facing * 640,
-        facing: this.facing,
-        life: 0.9,
-        maxLife: 0.9,
+        vx: dir * 640,
+        facing: dir,
+        life: hasUltimate ? 1.1 : 0.9,
+        maxLife: hasUltimate ? 1.1 : 0.9,
         hitIds: new Set<string>(),
       });
     }
   }
 
   private updateSpecialWaves(dt: number): void {
+    const waveDmg = this.progression.hasAbility('ultimateAbility') ? 35 : 25;
     for (const wave of this.specialWaves) {
       if (!wave.active) continue;
       wave.life -= dt;
@@ -1220,7 +1479,7 @@ export class GameEngine {
         if (!enemy.alive || wave.hitIds.has(enemy.id)) continue;
         if (rectsOverlap(box, enemy)) {
           wave.hitIds.add(enemy.id);
-          this.hitEnemy(enemy, 25, true);
+          this.hitEnemy(enemy, waveDmg, true);
         }
       }
       for (const sw of this.world.secretWalls) {
@@ -1232,6 +1491,7 @@ export class GameEngine {
           if (sw.hp <= 0) {
             sw.broken = true;
             this.essence += 50;
+            this.awardXP(65, sw.x + sw.w * 0.5, sw.y + sw.h * 0.5);
             soundEngine.playEnemyDefeat();
             const room = this.world.rooms.find((r) => r.id === sw.revealRoomId);
             if (room) {
@@ -1283,11 +1543,18 @@ export class GameEngine {
     let triggeredPogo = false;
 
     // 1. Enemies
+    const isComboFinisher = this.progression.hasAbility('combatCombo') && this.comboStep === 2;
+    const slashDamage = isComboFinisher ? 25 : 15;
     for (const enemy of this.world.enemies) {
       if (!enemy.alive || this.slash.hitIds.has(enemy.id)) continue;
       if (rectsOverlap(hitbox, enemy)) {
         this.slash.hitIds.add(enemy.id);
-        this.hitEnemy(enemy, 15, false);
+        const landed = this.hitEnemy(enemy, slashDamage, false);
+        if (landed && isComboFinisher) {
+          this.soul = Math.min(this.maxSoul, this.soul + 6);
+          this.spawnBurst(enemy.x + enemy.w * 0.5, enemy.y + enemy.h * 0.5, 16, '#fde047', 260, -60);
+          this.spawnFloatingText(enemy.x + enemy.w * 0.5, enemy.y - 26, 'COMBO!', '#fde047');
+        }
         if (this.slash.dir === 'down') {
           triggeredPogo = true;
         }
@@ -1308,6 +1575,7 @@ export class GameEngine {
         if (sw.hp <= 0) {
           sw.broken = true;
           this.essence += 50;
+          this.awardXP(65, sw.x + sw.w * 0.5, sw.y + sw.h * 0.5);
           this.hitstopTimer = 0.065;
           this.triggerShake(7.5, 0.24);
           soundEngine.playEnemyDefeat();
@@ -1338,6 +1606,7 @@ export class GameEngine {
         } else {
           bulb.alive = false;
           bulb.respawnTimer = 10;
+          this.awardXP(15, bulb.x, bulb.y - 12);
           soundEngine.playHit();
         }
       }
@@ -1428,8 +1697,12 @@ export class GameEngine {
     if (enemy.hp <= 0) {
       enemy.alive = false;
       this.enemiesDefeated += 1;
-      this.essence +=
+      const essenceDrop =
         enemy.kind === 'warden' ? 150 : enemy.kind === 'shieldbearer' ? 60 : enemy.kind === 'flyer' ? 35 : 20;
+      const xpDrop =
+        enemy.kind === 'warden' ? 250 : enemy.kind === 'shieldbearer' ? 110 : enemy.kind === 'flyer' ? 55 : 35;
+      this.essence += essenceDrop;
+      this.awardXP(xpDrop, ecx, enemy.y - 24);
       soundEngine.playEnemyDefeat();
       this.hitstopTimer = enemy.kind === 'warden' ? 0.09 : enemy.kind === 'shieldbearer' ? 0.07 : 0.055;
       this.triggerShake(enemy.kind === 'warden' ? 11 : enemy.kind === 'shieldbearer' ? 8 : 6, 0.25);
@@ -1633,9 +1906,10 @@ export class GameEngine {
   private updateWardenBossAI(e: Enemy, dt: number, pcx: number, pcy: number): void {
     const ecx = e.x + e.w * 0.5;
     const ecy = e.y + e.h * 0.5;
+    const arena = this.world.bossArena;
 
     if (!this.bossEngaged) {
-      if (pcx > 3310 && pcy < 620) {
+      if (pcx > arena.triggerX && pcy < arena.triggerY) {
         this.bossEngaged = true;
       } else {
         e.vy = Math.sin(this.elapsedTime * 2) * 15;
@@ -1657,7 +1931,7 @@ export class GameEngine {
     if (e.aiState === 'FOLLOW') {
       e.stateTimer -= dt;
       const hoverX = pcx + Math.sin(this.elapsedTime * (isPhase2 ? 1.85 : 1.4)) * 120;
-      const hoverY = 245 + Math.sin(this.elapsedTime * 2.5) * 28;
+      const hoverY = arena.floorY - 275 + Math.sin(this.elapsedTime * 2.5) * 28;
       e.vx += (Math.max(-260, Math.min(260, (hoverX - ecx) * 2.7)) - e.vx) * Math.min(1, dt * 4);
       e.vy += (Math.max(-190, Math.min(190, (hoverY - ecy) * 2.8)) - e.vy) * Math.min(1, dt * 4);
       e.facing = pcx >= ecx ? 1 : -1;
@@ -1667,7 +1941,7 @@ export class GameEngine {
         e.aiState = 'WINDUP';
         e.stateTimer = isPhase2 ? 0.38 : 0.5;
         e.targetX = pcx;
-        e.targetY = 475;
+        e.targetY = arena.floorY - 45;
         e.vx = 0;
         e.vy = -65;
       }
@@ -1700,12 +1974,12 @@ export class GameEngine {
       }
     } else if (e.aiState === 'DASH') {
       e.stateTimer -= dt;
-      const targetDashY = 520 - e.h - 4;
+      const targetDashY = arena.floorY - e.h - 4;
       e.vy = (targetDashY - e.y) * 9;
       if (Math.random() < 0.45) {
         this.spawnParticle(ecx, ecy, -e.facing * 90, -20, 3.2, 0.22, isPhase2 ? '#fb923c' : '#7ae7ff', 0);
       }
-      if (e.stateTimer <= 0 || e.x <= 3365 || e.x + e.w >= 4355) {
+      if (e.stateTimer <= 0 || e.x <= arena.minX + 5 || e.x + e.w >= arena.maxX - 5) {
         e.aiState = 'RECOVER';
         e.stateTimer = isPhase2 ? 0.95 : 1.25;
         e.vx *= 0.2;
@@ -1715,33 +1989,33 @@ export class GameEngine {
       e.stateTimer -= dt;
       e.vx *= 0.9;
       e.vy = 780;
-      if (e.y + e.h >= 516 || e.stateTimer <= 0) {
-        e.y = 516 - e.h;
+      if (e.y + e.h >= arena.floorY - 4 || e.stateTimer <= 0) {
+        e.y = arena.floorY - 4 - e.h;
         e.vx = 0;
         e.vy = 0;
         e.aiState = 'RECOVER';
         e.stateTimer = 1.15;
         this.triggerShake(9.5, 0.28);
         soundEngine.playLand();
-        this.spawnBurst(ecx, 515, 24, '#fb923c', 270, -100);
-        this.spawnShockwavePair(ecx, 520, '#fb923c', 380, 1.35);
-        this.fireSporeSpread(ecx, 490);
+        this.spawnBurst(ecx, arena.floorY - 5, 24, '#fb923c', 270, -100);
+        this.spawnShockwavePair(ecx, arena.floorY, '#fb923c', 380, 1.35);
+        this.fireSporeSpread(ecx, arena.floorY - 30);
       }
     } else if (e.aiState === 'ATTACK') {
       e.stateTimer -= dt;
-      if (e.y + e.h >= 516) {
-        e.y = 516 - e.h;
+      if (e.y + e.h >= arena.floorY - 4) {
+        e.y = arena.floorY - 4 - e.h;
         e.vy = 0;
         e.vx = 0;
         e.aiState = 'RECOVER';
         e.stateTimer = isPhase2 ? 1.1 : 1.45;
         this.triggerShake(7.5, 0.22);
         soundEngine.playLand();
-        this.spawnBurst(ecx, 515, 18, '#fb923c', 230, -90);
+        this.spawnBurst(ecx, arena.floorY - 5, 18, '#fb923c', 230, -90);
         if (isPhase2) {
-          this.spawnShockwavePair(ecx, 520, '#fb923c', 340, 1.1);
+          this.spawnShockwavePair(ecx, arena.floorY, '#fb923c', 340, 1.1);
         }
-        this.fireSporeSpread(ecx, 490);
+        this.fireSporeSpread(ecx, arena.floorY - 30);
       } else if (e.stateTimer <= 0) {
         e.aiState = 'RECOVER';
         e.stateTimer = isPhase2 ? 1.0 : 1.3;
@@ -1884,8 +2158,9 @@ export class GameEngine {
       rect.y = e.y;
     }
     if (e.kind === 'warden') {
-      e.x = Math.max(3360, Math.min(4360 - e.w, e.x));
-      e.y = Math.max(150, Math.min(520 - e.h, e.y));
+      const arena = this.world.bossArena;
+      e.x = Math.max(arena.minX, Math.min(arena.maxX - e.w, e.x));
+      e.y = Math.max(arena.minY, Math.min(arena.floorY - e.h, e.y));
     }
   }
 
@@ -1941,6 +2216,7 @@ export class GameEngine {
         } else {
           this.essence += 25;
         }
+        this.awardXP(75, relic.x, relic.y - 16);
         soundEngine.playBench();
         this.spawnBurst(relic.x, relic.y, 26, relic.color, 230, -80);
         this.saveProgress();
@@ -2225,32 +2501,34 @@ export class GameEngine {
   }
 
   private getInventoryItems(): InventoryItem[] {
+    const hasSword = this.progression.hasAbility('swordAttack');
+    const hasDash = this.progression.hasAbility('dash');
     return [
       {
         id: 'pale-needle',
         name: 'Pale Needle',
         category: 'Ability',
-        description: 'Forged bone blade enabling directional 4-way slashes (J / X).',
-        collected: true,
-        equipped: true,
+        description: 'Unlocks at Level 2 (Warrior): 4-directional slashes (J / X / Click).',
+        collected: hasSword,
+        equipped: hasSword,
         icon: 'needle',
       },
       {
         id: 'pogo-art',
         name: 'Downward Pogo Art',
         category: 'Ability',
-        description: 'Strike downward (S + J) on thorns, spore pods, and enemies to rebound upward.',
-        collected: true,
-        equipped: true,
+        description: 'Unlocks at Level 2 (Warrior): Strike downward (S + J) on thorns & pods to rebound.',
+        collected: hasSword,
+        equipped: hasSword,
         icon: 'crest',
       },
       {
         id: 'silk-dash',
         name: 'Silk Dash',
         category: 'Ability',
-        description: '8-directional burst dash with brief i-frames (K / Shift). Resets on pogo & wall jump.',
-        collected: true,
-        equipped: true,
+        description: 'Unlocks at Level 3 (Quick Knight) · I-frames at Level 7 (Shadow Warrior).',
+        collected: hasDash,
+        equipped: hasDash,
         icon: 'dash',
       },
       {
@@ -2296,7 +2574,7 @@ export class GameEngine {
     const boss = this.world.enemies.find((e) => e.kind === 'warden');
     const pcx = this.px + this.pw * 0.5;
     const pcy = this.py + this.ph * 0.5;
-    const zoneName = getZoneName(pcx, pcy);
+    const zoneName = getZoneName(pcx, pcy, this.world.rooms);
     const activeRoom = this.world.rooms.find((r) => r.id === this.currentRoomId) ?? this.world.rooms[0];
 
     const playerNormX = Math.max(0, Math.min(1, (pcx - activeRoom.x) / activeRoom.w));
@@ -2308,7 +2586,10 @@ export class GameEngine {
     const bossHp = boss ? Math.max(0, boss.hp) : 0;
     const bossMaxHp = boss ? boss.maxHp : 240;
     const secs = Math.floor(this.runTime);
-    const dashReady = this.dashCooldownTimer <= 0 && (this.grounded || this.airDashAvailable);
+    const dashReady =
+      this.progression.hasAbility('dash') &&
+      this.dashCooldownTimer <= 0 &&
+      (this.grounded || this.airDashAvailable);
     const canHeal = this.soul >= 33 && this.hp < this.maxHp;
     const secretWallsBroken = this.world.secretWalls.filter((sw) => sw.broken).length;
     const totalSecretWalls = this.world.secretWalls.length;
@@ -2316,8 +2597,10 @@ export class GameEngine {
     const speakerKey = this.nearbySpeaker?.id ?? '';
     const dialogueKey = this.activeDialogue ? `${this.activeDialogue.speakerName}:${this.activeDialogue.lineIndex}` : '';
     const hasSave = this.hasSaveData();
+    const stats = this.progression.getProgressStats();
+    const bannerKey = this.levelUpBanner ? `${this.levelUpBanner.level}:${this.levelUpBanner.abilityLabel}` : '';
 
-    const key = `${this.status}|${this.sceneTheme}|${this.hp}|${this.maxHp}|${this.soul}|${this.essence}|${zoneName}|${this.currentRoomId}|${this.mapVersion}|${normBucketX},${normBucketY}|${secretWallsBroken}|${bossActive}|${bossHp}|${secs}|${this.enemiesDefeated}|${this.pogoChains}|${dashReady}|${canHeal}|${inventoryKey}|${speakerKey}|${dialogueKey}|${hasSave}`;
+    const key = `${this.status}|${this.sceneTheme}|${this.world.width}x${this.world.height}|${this.hp}|${this.maxHp}|${this.soul}|${this.essence}|${stats.level}|${stats.xp}|${bannerKey}|${zoneName}|${this.currentRoomId}|${this.mapVersion}|${normBucketX},${normBucketY}|${secretWallsBroken}|${bossActive}|${bossHp}|${secs}|${this.enemiesDefeated}|${this.pogoChains}|${dashReady}|${canHeal}|${inventoryKey}|${speakerKey}|${dialogueKey}|${hasSave}`;
     if (!force && key === this.lastHudKey) return;
     this.lastHudKey = key;
 
@@ -2329,8 +2612,19 @@ export class GameEngine {
       soul: this.soul,
       maxSoul: this.maxSoul,
       essence: this.essence,
+      level: stats.level,
+      levelTitle: stats.title,
+      abilityLabel: stats.abilityLabel,
+      xp: stats.xp,
+      xpIntoLevel: stats.xpIntoLevel,
+      xpForNextLevel: stats.xpForNextLevel,
+      xpProgress: stats.progress,
+      unlockedAbilities: { ...gameState.unlockedAbilities },
+      levelUpBanner: this.levelUpBanner ? { ...this.levelUpBanner } : null,
       zoneName,
       currentRoomId: this.currentRoomId,
+      worldWidth: this.world.width,
+      worldHeight: this.world.height,
       playerNormX,
       playerNormY,
       rooms: this.world.rooms.map((r) => ({ ...r })),

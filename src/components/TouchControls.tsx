@@ -1,10 +1,12 @@
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp } from 'lucide-react';
 import type { VirtualAction } from '../game/input';
+import type { AbilityId } from '../game/progression';
 
 interface TouchControlsProps {
   visible: boolean;
   canHeal: boolean;
   hasSpeakerNearby: boolean;
+  unlockedAbilities: Record<AbilityId, boolean>;
   onAction: (action: VirtualAction, active: boolean) => void;
 }
 
@@ -42,6 +44,7 @@ export function TouchControls({
   visible,
   canHeal,
   hasSpeakerNearby,
+  unlockedAbilities,
   onAction,
 }: TouchControlsProps) {
   if (!visible) return null;
@@ -96,7 +99,9 @@ export function TouchControls({
             label="Special Attack"
             action="special"
             onAction={onAction}
-            className="border-[#38bdf8]/60 px-3 text-xs font-semibold text-[#bae6fd]"
+            className={`border-[#38bdf8]/60 px-3 text-xs font-semibold text-[#bae6fd] ${
+              unlockedAbilities.energyAttack ? '' : 'opacity-40'
+            }`}
           >
             SPL
           </PadButton>
@@ -104,7 +109,9 @@ export function TouchControls({
             label="Silk Dash"
             action="dash"
             onAction={onAction}
-            className="px-3 text-xs font-semibold"
+            className={`px-3 text-xs font-semibold ${
+              unlockedAbilities.dash ? '' : 'opacity-40'
+            }`}
           >
             DSH
           </PadButton>
@@ -115,7 +122,9 @@ export function TouchControls({
             label="Needle Slash"
             action="attack"
             onAction={onAction}
-            className="h-14 w-14 rounded-full text-xs font-semibold"
+            className={`h-14 w-14 rounded-full text-xs font-semibold ${
+              unlockedAbilities.swordAttack ? '' : 'opacity-40'
+            }`}
           >
             ATK
           </PadButton>

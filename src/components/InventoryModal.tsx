@@ -1,4 +1,5 @@
 import { Backpack, CheckCircle2, Compass, Lock, Sparkles, Sword, Wind, X } from 'lucide-react';
+import { PROGRESSION_TABLE, type AbilityId } from '../game/progression';
 import type { InventoryItem } from '../game/types';
 
 interface InventoryModalProps {
@@ -9,6 +10,10 @@ interface InventoryModalProps {
   soul: number;
   maxSoul: number;
   essence: number;
+  level: number;
+  levelTitle: string;
+  xp: number;
+  unlockedAbilities: Record<AbilityId, boolean>;
   secretWallsBroken: number;
   totalSecretWalls: number;
   onClose: () => void;
@@ -39,6 +44,10 @@ export function InventoryModal({
   soul,
   maxSoul,
   essence,
+  level,
+  levelTitle,
+  xp,
+  unlockedAbilities,
   secretWallsBroken,
   totalSecretWalls,
   onClose,
@@ -154,6 +163,45 @@ export function InventoryModal({
               </div>
             </div>
           ))}
+        </div>
+
+        {/* 10-Level Ability Progression Tree */}
+        <div className="mt-5 border-t border-[#193330] pt-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-[#95d5b2]">
+              Knight Progression · Level {level}: {levelTitle}
+            </span>
+            <span className="font-mono-code text-xs text-[#fde047] tabular-nums">{xp} XP</span>
+          </div>
+          <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {PROGRESSION_TABLE.map((tier) => {
+              const unlocked = unlockedAbilities[tier.abilityId];
+              return (
+                <div
+                  key={tier.level}
+                  className={`flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${
+                    unlocked
+                      ? 'border-[#2b584e] bg-[#0a1d1f] text-[#eef7f3]'
+                      : 'border-[#162b28] bg-[#050e10] text-[#6d8d83] opacity-75'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold">
+                      Lvl {tier.level} {tier.title}
+                    </div>
+                    <div className="truncate text-[11px] text-[#8eb0a5]">{tier.abilityLabel}</div>
+                  </div>
+                  <div className="font-mono-code shrink-0 text-[10px] tabular-nums">
+                    {unlocked ? (
+                      <span className="text-[#74c69d]">UNLOCKED</span>
+                    ) : (
+                      <span>{tier.xpRequired} XP</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         <div className="mt-6 flex items-center justify-between border-t border-[#193330] pt-4 text-xs text-[#7ea196]">

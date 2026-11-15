@@ -1,4 +1,5 @@
 import type { Platform } from '../types';
+import type { PropAnchor } from '../world';
 
 export class MysticSwampRenderer {
   private layer1Cache: HTMLCanvasElement | null = null;
@@ -110,27 +111,40 @@ export class MysticSwampRenderer {
     cy: number,
     viewW: number,
     viewH: number,
-    time: number
+    time: number,
+    anchors?: PropAnchor[]
   ): void {
-    void cy;
-    void viewH;
-    const spans = [140, 1340, 2520, 3440];
-    for (const baseX of spans) {
-      if (baseX + 1080 < cx - 120 || baseX - 160 > cx + viewW + 120) continue;
-
-      const floorY = baseX > 3200 ? 520 : baseX > 2400 ? 900 : baseX > 1200 ? 880 : 920;
+    const items: PropAnchor[] = anchors && anchors.length > 0
+      ? anchors
+      : [
+          { x: 180, y: 780 },
+          { x: 1160, y: 780 },
+          { x: 2220, y: 780 },
+          { x: 3440, y: 780 },
+        ];
+    for (const anchor of items) {
+      const baseX = anchor.x;
+      const floorY = anchor.y;
+      if (
+        baseX + 980 < cx - 120 ||
+        baseX - 160 > cx + viewW + 120 ||
+        floorY + 260 < cy - 120 ||
+        floorY - 360 > cy + viewH + 120
+      ) {
+        continue;
+      }
 
       // Calm reflective teal-mist swamp water below elevated banks
-      this.drawSwampWater(ctx, baseX + 420, floorY + 26, 620, 170, time);
+      this.drawSwampWater(ctx, baseX + 260, floorY + 62, 580, 140, time);
 
       // Woven thatched dome hut on wooden stilts on the left bank
-      this.drawThatchedHut(ctx, baseX + 165, floorY);
+      this.drawThatchedHut(ctx, baseX + 120, floorY);
 
       // Three glowing cyan/blue spore mushroom stalks near the bridge
-      this.drawSporePillars(ctx, baseX + 440, floorY, time);
+      this.drawSporePillars(ctx, baseX + 340, floorY, time);
 
       // Massive curved mossy purple-brown fallen log bridge
-      this.drawFallenLogBridge(ctx, baseX + 350, floorY + 8, baseX + 910, floorY + 14);
+      this.drawFallenLogBridge(ctx, baseX + 280, floorY + 8, baseX + 760, floorY + 12);
     }
   }
 
@@ -355,7 +369,8 @@ export class MysticSwampRenderer {
     viewH: number,
     cx: number,
     cy: number,
-    time: number
+    time: number,
+    anchors?: PropAnchor[]
   ): void {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
@@ -381,14 +396,29 @@ export class MysticSwampRenderer {
 
     // Bioluminescent cyan/blue spore & root-light halos in world space
     ctx.translate(-Math.round(cx), -Math.round(cy));
-    const spans = [140, 1340, 2520, 3440];
-    for (const baseX of spans) {
-      if (baseX + 1000 < cx || baseX - 100 > cx + viewW) continue;
-      const floorY = baseX > 3200 ? 520 : baseX > 2400 ? 900 : baseX > 1200 ? 880 : 920;
+    const items: PropAnchor[] = anchors && anchors.length > 0
+      ? anchors
+      : [
+          { x: 180, y: 780 },
+          { x: 1160, y: 780 },
+          { x: 2220, y: 780 },
+          { x: 3440, y: 780 },
+        ];
+    for (const anchor of items) {
+      const baseX = anchor.x;
+      const floorY = anchor.y;
+      if (
+        baseX + 980 < cx ||
+        baseX - 100 > cx + viewW ||
+        floorY + 120 < cy ||
+        floorY - 260 > cy + viewH
+      ) {
+        continue;
+      }
 
       const glowPoints = [
-        { gx: baseX + 215, gy: floorY - 12, r: 95 },
-        { gx: baseX + 465, gy: floorY - 58, r: 155 },
+        { gx: baseX + 160, gy: floorY - 12, r: 95 },
+        { gx: baseX + 365, gy: floorY - 58, r: 155 },
       ];
       for (const gp of glowPoints) {
         const rad = ctx.createRadialGradient(gp.gx, gp.gy, 6, gp.gx, gp.gy, gp.r);

@@ -1,11 +1,14 @@
 import { useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { Compass, Crosshair, Minus, Plus, X } from 'lucide-react';
-import type { RoomCell } from '../game/types';
+import type { RoomCell, SceneTheme } from '../game/types';
 
 interface WorldMapModalProps {
   open: boolean;
+  sceneTheme: SceneTheme;
   rooms: RoomCell[];
   currentRoomId: string;
+  worldWidth: number;
+  worldHeight: number;
   playerNormX: number;
   playerNormY: number;
   secretWallsBroken: number;
@@ -13,17 +16,26 @@ interface WorldMapModalProps {
   onClose: () => void;
 }
 
+const MAP_TITLES: Record<SceneTheme, string> = {
+  crystal: 'Crystal Ice Cavern · Vertical Drop Shaft',
+  swamp: 'Mystic Swamp Forest · Winding Marshway',
+  grotto: 'Lush Green Moss Grotto · Cavern Maze',
+};
+
 export function WorldMapModal({
   open,
+  sceneTheme,
   rooms,
   currentRoomId,
+  worldWidth,
+  worldHeight,
   playerNormX,
   playerNormY,
   secretWallsBroken,
   totalSecretWalls,
   onClose,
 }: WorldMapModalProps) {
-  const [zoom, setZoom] = useState(1.15);
+  const [zoom, setZoom] = useState(1.1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
@@ -36,11 +48,21 @@ export function WorldMapModal({
     rooms.find((r) => r.id === (selectedRoomId ?? currentRoomId) && r.discovered) ??
     rooms.find((r) => r.id === currentRoomId);
 
-  const cellW = 136;
-  const cellH = 98;
-  const gap = 18;
-  const mapW = 4 * cellW + 3 * gap;
-  const mapH = 3 * cellH + 2 * gap;
+  const mapW = 620;
+  const mapH = 380;
+  const pad = 24;
+  const safeW = Math.max(1, worldWidth || 2800);
+  const safeH = Math.max(1, worldHeight || 2100);
+  const scale = Math.min((mapW - pad * 2) / safeW, (mapH - pad * 2) / safeH);
+  const offsetX = (mapW - safeW * scale) * 0.5;
+  const offsetY = (mapH - safeH * scale) * 0.5;
+
+  const toRect = (room: RoomCell) => ({
+    x: offsetX + room.x * scale,
+    y: offsetY + room.y * scale,
+    w: Math.max(36, room.w * scale - 4),
+    h: Math.max(28, room.h * scale - 4),
+  });
 
   const handleWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -67,9 +89,11 @@ export function WorldMapModal({
   };
 
   const handleResetView = () => {
-    setZoom(1.15);
+    setZoom(1.1);
     setPan({ x: 0, y: 0 });
   };
+
+  const renderedLinks = new Set<string>();
 
   return (
     <div
@@ -85,7 +109,7 @@ export function WorldMapModal({
             <Compass className="h-5 w-5 text-[#74c69d]" />
             <div>
               <h2 className="font-display text-lg font-semibold tracking-wider text-[#eef7f3]">
-                Mossgrotto Cavern Map
+                {MAP_TITLES[sceneTheme]}
               </h2>
               <div className="mt-0.5 flex items-center gap-2 text-xs text-[#89aba0]">
                 <span className="font-mono-code tabular-nums">
@@ -175,38 +199,38 @@ export function WorldMapModal({
               viewBox={`-20 -20 ${mapW + 40} ${mapH + 40}`}
               className="overflow-visible"
             >
-              {/* Connection Passage Lines */}
+              {/* Interconnected Passage Lines */}
               {rooms.map((room) => {
                 if (!room.discovered) return null;
-                const cx = room.gridX * (cellW + gap) + cellW * 0.5;
-                const cy = room.gridY * (cellH + gap) + cellH * 0.5;
-                return room.connections.map((dir) => {
-                  let tx = cx;
-                  let ty = cy;
-                  if (dir === 'E') tx += cellW * 0.5 + gap * 0.55;
-                  else if (dir === 'W') tx -= cellW * 0.5 + gap * 0.55;
-                  else if (dir === 'S') ty += cellH * 0.5 + gap * 0.55;
-                  else if (dir === 'N') ty -= cellH * 0.5 + gap * 0.55;
+                const a = toRect(room);
+                const ax = a.x + a.w * 0.5;
+                const ay = a.y + a.h * 0.5;
+                return room.adjacentRoomIds.map((adjId) => {
+                  const pairKey = room.id < adjId ? `${room.id}:${adjId}` : `${adjId}:${room.id}`;
+                  if (renderedLinks.has(pairKey)) return null;
+                  const adj = rooms.find((r) => r.id === adjId);
+                  if (!adj || !adj.discovered) return null;
+                  renderedLinks.add(pairKey);
+                  const b = toRect(adj);
                   return (
                     <line
-                      key={`${room.id}-${dir}`}
-                      x1={cx}
-                      y1={cy}
-                      x2={tx}
-                      y2={ty}
-                      stroke={room.visited ? '#40916c' : '#23423d'}
-                      strokeWidth={6}
+                      key={pairKey}
+                      x1={ax}
+                      y1={ay}
+                      x2={b.x + b.w * 0.5}
+                      y2={b.y + b.h * 0.5}
+                      stroke={room.visited || adj.visited ? '#40916c' : '#23423d'}
+                      strokeWidth={7}
                       strokeLinecap="round"
                     />
                   );
                 });
               })}
 
-              {/* Room Grid Cells */}
+              {/* Proportional Chamber Polygons */}
               {rooms.map((room) => {
                 if (!room.discovered) return null;
-                const x = room.gridX * (cellW + gap);
-                const y = room.gridY * (cellH + gap);
+                const { x, y, w, h } = toRect(room);
                 const isCurrent = room.id === currentRoomId;
                 const isSelected = room.id === inspectedRoom?.id;
 
@@ -228,6 +252,9 @@ export function WorldMapModal({
                   ? '#40916c'
                   : '#274a44';
 
+                const shortName =
+                  w < 105 && room.name.length > 16 ? `${room.name.slice(0, 14)}…` : room.name;
+
                 return (
                   <g
                     key={room.id}
@@ -237,9 +264,9 @@ export function WorldMapModal({
                     <rect
                       x={x}
                       y={y}
-                      width={cellW}
-                      height={cellH}
-                      rx={6}
+                      width={w}
+                      height={h}
+                      rx={5}
                       fill={fill}
                       stroke={stroke}
                       strokeWidth={isCurrent ? 2.4 : 1.5}
@@ -248,28 +275,28 @@ export function WorldMapModal({
 
                     {/* Room Title */}
                     <text
-                      x={x + 10}
-                      y={y + 22}
+                      x={x + 8}
+                      y={y + 18}
                       fill={room.visited ? '#e6f5ee' : '#6f9489'}
-                      fontSize="11"
+                      fontSize={w < 105 ? '9.5' : '11'}
                       fontWeight="600"
                     >
-                      {room.name}
+                      {shortName}
                     </text>
 
-                    {/* Room Sub-tags (non-hue-only text + icon cues) */}
-                    {room.hasBench && room.visited && (
-                      <text x={x + 10} y={y + cellH - 12} fill="#95d5b2" fontSize="10">
-                        Bench Checkpoint
+                    {/* Room Sub-tags */}
+                    {h >= 46 && room.hasBench && room.visited && (
+                      <text x={x + 8} y={y + h - 8} fill="#95d5b2" fontSize="9.5">
+                        Bench
                       </text>
                     )}
-                    {room.isSecret && (
-                      <text x={x + 10} y={y + cellH - 12} fill="#67e8f9" fontSize="10">
-                        Secret Chamber
+                    {h >= 46 && room.isSecret && (
+                      <text x={x + 8} y={y + h - 8} fill="#67e8f9" fontSize="9.5">
+                        Secret
                       </text>
                     )}
-                    {room.isBossRoom && (
-                      <text x={x + 10} y={y + cellH - 12} fill="#fbbf24" fontSize="10">
+                    {h >= 46 && room.isBossRoom && (
+                      <text x={x + 8} y={y + h - 8} fill="#fbbf24" fontSize="9.5">
                         Warden Arena
                       </text>
                     )}
@@ -277,8 +304,8 @@ export function WorldMapModal({
                     {/* Player Position Marker */}
                     {isCurrent && (
                       <g
-                        transform={`translate(${x + 16 + playerNormX * (cellW - 32)}, ${
-                          y + 32 + playerNormY * (cellH - 48)
+                        transform={`translate(${x + 12 + playerNormX * Math.max(8, w - 24)}, ${
+                          y + 22 + playerNormY * Math.max(8, h - 32)
                         })`}
                       >
                         <circle r={9} fill="rgba(167, 243, 208, 0.25)" />

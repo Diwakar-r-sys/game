@@ -1,3 +1,5 @@
+import type { AbilityId } from './progression';
+
 export type GameStatus = 'TITLE_MENU' | 'PLAYING' | 'PAUSED' | 'VICTORY' | 'GAME_OVER';
 export type SceneTheme = 'crystal' | 'swamp' | 'grotto';
 
@@ -101,6 +103,12 @@ export interface WaterVolume extends Rect {
 export interface AirStream extends Rect {
   id: string;
   liftForce: number;
+}
+
+export interface BouncePad extends Rect {
+  id: string;
+  boostVelocity: number;
+  bounceTimer: number;
 }
 
 export interface ReedProp {
@@ -348,6 +356,15 @@ export interface WorldRelicPickup {
   color: string;
 }
 
+export interface XpOrb {
+  id: string;
+  x: number;
+  y: number;
+  xpValue: number;
+  collected: boolean;
+  phase: number;
+}
+
 export interface LevelPreset {
   id: string;
   name: string;
@@ -372,6 +389,8 @@ export interface SaveStateData {
   maxHp: number;
   soul: number;
   essence: number;
+  xp?: number;
+  collectedOrbIds?: string[];
   zoneName: string;
   collectedItemIds: string[];
   equippedItemIds: string[];
@@ -379,6 +398,12 @@ export interface SaveStateData {
   discoveredRoomIds: string[];
   brokenWallIds: string[];
   savedAt: number;
+}
+
+export interface LevelUpBanner {
+  level: number;
+  title: string;
+  abilityLabel: string;
 }
 
 export interface HudSnapshot {
@@ -389,7 +414,18 @@ export interface HudSnapshot {
   soul: number;
   maxSoul: number;
   essence: number;
+  level: number;
+  levelTitle: string;
+  abilityLabel: string;
+  xp: number;
+  xpIntoLevel: number;
+  xpForNextLevel: number;
+  xpProgress: number;
+  unlockedAbilities: Record<AbilityId, boolean>;
+  levelUpBanner: LevelUpBanner | null;
   zoneName: string;
+  worldWidth: number;
+  worldHeight: number;
   currentRoomId: string;
   playerNormX: number;
   playerNormY: number;
